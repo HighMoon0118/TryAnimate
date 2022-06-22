@@ -1,25 +1,26 @@
 package com.example.tryanimate.ui.theme
 
 import android.util.Log
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.AnimationVector1D
-import androidx.compose.animation.core.calculateTargetValue
+import androidx.compose.animation.core.*
 import androidx.compose.animation.splineBasedDecay
 import androidx.compose.foundation.gestures.*
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.material.Card
 import androidx.compose.material.FractionalThreshold
+import androidx.compose.material.MaterialTheme
 import androidx.compose.material.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Constraints
 import androidx.lifecycle.MutableLiveData
-import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
 
@@ -43,111 +44,132 @@ fun DrawCalendar (
     }
 }
 
-
-
 @Composable
 fun Swiper (
     content: @Composable () -> Unit
 ) {
-    val x_List = mutableListOf(-1080, 0, 1080)
 
+    val vAnchor = remember { mutableStateOf (listOf(0f, 0f, 0f) ) }
+    val vState = remember { mutableStateOf (1080f) }
+    val vAnimate = animateFloatAsState(
+        targetValue = vState.value,
+        animationSpec = tween(durationMillis = if (vState.value in vAnchor.value) 500 else 0, easing = FastOutSlowInEasing),
+    )
 
-    var minH by remember { mutableStateOf(1079) }
-    var midH by remember { mutableStateOf(1080) }
-    var maxH by remember { mutableStateOf(1081) }
+    val hAnchor = remember { mutableStateOf ((-499..499).map { i -> i * 1080 } ) }
+    val hState = remember { mutableStateOf (0f) }
+    val hAnimate = animateFloatAsState(
+        targetValue = hState.value,
+        animationSpec = tween(100, easing = FastOutSlowInEasing),
+    )
 
-    var state = remember { Animatable(1080f) }
-
-    var anchors = arrayOf(minH.toFloat(), midH.toFloat(), maxH.toFloat())
-    Log.d("11111", "11111 ${anchors[0]}")
+    val x_List = remember { mutableStateOf ( arrayOf(-1080, 0, 1080)) }
 
     Layout(
-        modifier = Modifier.horizonSwiper(
-            state = state,
-            anchors = anchors
-        ),
+        modifier = Modifier
+            .MySwiper(
+                vState = vState,
+                hState = hState,
+                vAnchor = vAnchor,
+                hAnchor = hAnchor,
+            ),
         content = content
     ) { measurables, constraints ->
-        Log.d("33333", "33333")
 
         val w = constraints.maxWidth * 3
         val itemW = constraints.maxWidth
         val itemH = constraints.maxHeight
 
-        minH = itemW / 2
-        midH = itemW
-        maxH = itemH
-
-        state.updateBounds(
-            lowerBound = 300f,
-            upperBound = itemH.toFloat()
-        )
-
-        val items = measurables.map { measurable ->
-            measurable.measure(Constraints(itemW, itemW, state.value.toInt(), state.value.toInt()))
+        if (vAnchor.value[1].toInt() != itemW) {
+            vAnchor.value = listOf((itemW / 2).toFloat(), itemW.toFloat(), itemH.toFloat())
         }
 
-        layout(w, state.value.toInt()){
+        val h = vAnimate.value.toInt()
+
+        val items = measurables.map { measurable ->
+            measurable.measure(Constraints(itemW, itemW, h, h))
+        }
+
+        layout(w, h){
             items.forEachIndexed { i, item ->
-                item.placeRelative(x = x_List[i], y = 0)
+                x_List.value[i] += hAnimate.value.toInt()
+                item.placeRelative(x = x_List.value[i], y = 0)
             }
         }
     }
 }
 
-fun Modifier.horizonSwiper(
-    state: Animatable<Float, AnimationVector1D>,
-    anchors: Array<Float>,
-    fractionalThreshold: Float = 0.1f
-) = then(
-    Modifier.pointerInput(Unit) {
+fun Modifier.MySwiper(
+    vState: MutableState<Float>,
+    hState: MutableState<Float>,
+    vAnchor: MutableState<List<Float>>,
+    hAnchor: MutableState<List<Int>>
+) = composed {
 
-        val decay = splineBasedDecay<Float>(this)
+    pointerInput(Unit) {
+
+        val vAnchor = vAnchor.value
+        val hAnchor = hAnchor.value
+        var currentHState = 499
+        var currentVState = 1
 
         coroutineScope {
+
             while (true) {
-                Log.d("22222", "${anchors[0]}")
                 awaitPointerEventScope {
 
                     val down = awaitFirstDown()
-                    val velocityTracker = VelocityTracker()
+
+                    horizontalDrag(down.id) { change ->
+
+                        val a = change.previousPosition.x
+                        val b = change.position.x
+
+                        launch {
+                            hState.value = hAnchor[currentHState] + b - a
+                        }
+                    }
+
+                }
+
+                awaitPointerEventScope {
+                    val down = awaitFirstDown()
 
                     verticalDrag(down.id) { change ->
                         val a = change.previousPosition.y
                         val b = change.position.y
 
-                        val plus = (b - a) * 3
+                        var target = vState.value + (b - a)
+
+                        if (target <= 300) target = 300f
+                        else if (target >= vAnchor[2]) target = vAnchor[2]
 
                         launch {
-                            state.animateTo(state.value + plus)
+                            vState.value = target
                         }
-                        velocityTracker.addPosition(
-                            change.uptimeMillis,
-                            change.position
-                        )
                     }
-                    val velocity = velocityTracker.calculateVelocity().y / 3
 
-                    val targetOffsetY = decay.calculateTargetValue(
-                        state.value,
-                        velocity
-                    )
-                    Log.d("55555", "${anchors[0]}")
                     launch {
-                        if (state.value <= anchors[0]) {
-                            state.animateTo(
-                                targetValue = anchors[0],
-                                initialVelocity = velocity
-                            )
-                        } else {
-                            state.animateDecay(velocity, decay)
+                        val currentY = vState.value
+
+                        if (currentVState == 0) {
+                            if (currentY > vAnchor[1]) currentVState = 2
+                            else if (currentY > vAnchor[0]) currentVState = 1
+                        } else if (currentVState == 1) {
+                            if (currentY < vAnchor[1]) currentVState = 0
+                            else if (currentY > vAnchor[1]) currentVState = 2
+                        } else if (currentVState == 2) {
+                            if (currentY < vAnchor[1]) currentVState = 0
+                            else if (currentY < vAnchor[2]) currentVState = 1
                         }
+
+                        vState.value = vAnchor[currentVState]
                     }
                 }
             }
         }
     }
-)
+}
 
 
 @Composable
