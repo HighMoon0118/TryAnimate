@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.compose.animation.core.*
 import androidx.compose.animation.splineBasedDecay
 import androidx.compose.foundation.gestures.*
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.material.Card
@@ -13,6 +14,8 @@ import androidx.compose.material.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
+import androidx.compose.ui.input.pointer.ConsumedData
+import androidx.compose.ui.input.pointer.consumeAllChanges
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.Layout
@@ -21,6 +24,7 @@ import androidx.compose.ui.unit.Constraints
 import androidx.lifecycle.MutableLiveData
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import kotlin.math.abs
 import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
 
@@ -53,17 +57,24 @@ fun Swiper (
     val vState = remember { mutableStateOf (1080f) }
     val vAnimate = animateFloatAsState(
         targetValue = vState.value,
-        animationSpec = tween(durationMillis = if (vState.value in vAnchor.value) 500 else 0, easing = FastOutSlowInEasing),
+        animationSpec = tween(
+            durationMillis = if (vState.value in vAnchor.value) 600 else 0,
+            easing = LinearOutSlowInEasing
+        ),
     )
 
-    val hAnchor = remember { mutableStateOf ((-499..499).map { i -> i * 1080 } ) }
     val hState = remember { mutableStateOf (0f) }
     val hAnimate = animateFloatAsState(
         targetValue = hState.value,
-        animationSpec = tween(100, easing = FastOutSlowInEasing),
+        animationSpec = tween(
+            durationMillis = 600,
+            easing = LinearOutSlowInEasing
+        ),
     )
 
-    val x_List = remember { mutableStateOf ( arrayOf(-1080, 0, 1080)) }
+    val x_List = remember { mutableStateOf ( arrayOf(0, 1080, 2160)) }
+
+    val lmr by remember { mutableStateOf( arrayOf(0, 1, 2)) }
 
     Layout(
         modifier = Modifier
@@ -71,7 +82,7 @@ fun Swiper (
                 vState = vState,
                 hState = hState,
                 vAnchor = vAnchor,
-                hAnchor = hAnchor,
+                thresholds = 0.1f
             ),
         content = content
     ) { measurables, constraints ->
@@ -90,10 +101,25 @@ fun Swiper (
             measurable.measure(Constraints(itemW, itemW, h, h))
         }
 
-        layout(w, h){
+        var tmp = x_List.value.map { num -> num + hAnimate.value.toInt() }
+
+        if (tmp[lmr[2]] >= 3240) {
+            x_List.value[lmr[2]] -= 3240
+            for (i in 0 until 3) {
+                lmr[i] -= 1
+                if (lmr[i] < 0) lmr[i] = 2
+            }
+        } else if (tmp[lmr[0]] <= -1080) {
+            x_List.value[lmr[0]] += 3240
+            for (i in 0 until 3) {
+                lmr[i] += 1
+                if (lmr[i] > 2) lmr[i] = 0
+            }
+        }
+
+        layout(w, constraints.maxHeight){
             items.forEachIndexed { i, item ->
-                x_List.value[i] += hAnimate.value.toInt()
-                item.placeRelative(x = x_List.value[i], y = 0)
+                item.placeRelative(x = tmp[i], y = 0)
             }
         }
     }
@@ -103,53 +129,87 @@ fun Modifier.MySwiper(
     vState: MutableState<Float>,
     hState: MutableState<Float>,
     vAnchor: MutableState<List<Float>>,
-    hAnchor: MutableState<List<Int>>
+    thresholds: Float
 ) = composed {
 
     pointerInput(Unit) {
 
         val vAnchor = vAnchor.value
-        val hAnchor = hAnchor.value
-        var currentHState = 499
+        var currentHState = 0
         var currentVState = 1
 
         coroutineScope {
 
             while (true) {
+
+                var isVertical = false
+                val velocityTracker = VelocityTracker()
+                var hDist = 0f
+
                 awaitPointerEventScope {
+
+
 
                     val down = awaitFirstDown()
 
-                    horizontalDrag(down.id) { change ->
+                    var change = awaitDragOrCancellation(down.id)?.apply {
 
-                        val a = change.previousPosition.x
-                        val b = change.position.x
-
-                        launch {
-                            hState.value = hAnchor[currentHState] + b - a
+                        if (abs(down.position.x - position.x) < abs(down.position.y - position.y) ) {
+                            isVertical = true
                         }
                     }
 
+                    if (change != null && change.pressed) {
+
+                        if (isVertical) {
+
+                            verticalDrag(change.id) { change ->
+                                velocityTracker.addPosition(
+                                    change.uptimeMillis,
+                                    change.position
+                                )
+                                val a = change.previousPosition.y
+                                val b = change.position.y
+
+                                var target = vState.value + (b - a)
+
+                                if (target <= 300) target = 300f
+                                else if (target >= vAnchor[2]) target = vAnchor[2]
+
+                                launch {
+                                    vState.value = target
+                                }
+                            }
+                        } else {
+
+                            if (hState.value - currentHState >= 1080) currentHState += 1080
+                            else if (hState.value - currentHState <= -1080) currentHState -= 1080
+
+                            velocityTracker.addPosition(
+                                change.uptimeMillis,
+                                change.position
+                            )
+                            horizontalDrag(change.id) { change ->
+                                velocityTracker.addPosition(
+                                    change.uptimeMillis,
+                                    change.position
+                                )
+
+                                val a = change.position.x
+
+                                hDist = a - down.position.x
+
+                                launch {
+                                    hState.value = currentHState + hDist
+                                }
+                            }
+                        }
+                    }
                 }
 
-                awaitPointerEventScope {
-                    val down = awaitFirstDown()
 
-                    verticalDrag(down.id) { change ->
-                        val a = change.previousPosition.y
-                        val b = change.position.y
-
-                        var target = vState.value + (b - a)
-
-                        if (target <= 300) target = 300f
-                        else if (target >= vAnchor[2]) target = vAnchor[2]
-
-                        launch {
-                            vState.value = target
-                        }
-                    }
-
-                    launch {
+                launch {
+                    if (isVertical) {
                         val currentY = vState.value
 
                         if (currentVState == 0) {
@@ -164,13 +224,24 @@ fun Modifier.MySwiper(
                         }
 
                         vState.value = vAnchor[currentVState]
+                    } else {
+                        val width = 1080
+
+                        val line = width * thresholds
+
+                        if (hDist < -line) {
+                            hState.value = currentHState - 1080f
+                        } else if (hDist > line) {
+                            hState.value = currentHState + 1080f
+                        } else {
+                            hState.value = currentHState.toFloat()
+                        }
                     }
                 }
             }
         }
     }
 }
-
 
 @Composable
 fun ItemMonth (
@@ -182,7 +253,7 @@ fun ItemMonth (
         val h = constraints.maxHeight
         val itemH = h / 5
 
-        val items = measurables.map { measurable -> measurable.measure(Constraints(w, w, h, h)) }
+        val items = measurables.map { measurable -> measurable.measure(Constraints(0, w, itemH, itemH)) }
 
         layout(w, h){
             var y = 0
@@ -204,7 +275,7 @@ fun ItemWeek (
         val h = constraints.maxHeight
         val itemW = w / 7
 
-        val items = measurables.map { measurable -> measurable.measure(Constraints(itemW, itemW, h, h)) }
+        val items = measurables.map { measurable -> measurable.measure(Constraints(itemW, itemW, 0, h)) }
 
 
         layout(w, h){
@@ -221,7 +292,7 @@ fun ItemWeek (
 fun ItemDay(
 
 ) {
-    Card() {
+    Card(modifier = Modifier.fillMaxSize()) {
         Text(text = "day")
     }
 }
